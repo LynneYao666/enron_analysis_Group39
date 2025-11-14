@@ -1,87 +1,186 @@
-# ---------- Phase 0: Setup and Data Preparation----------
-# ----------  Load all Enron emails (simplified) ----------
-import os
+# =====================================================
+#  ENRON — Insider Trading Detection Pipeline (CSV Version)
+#  For CSV format: file, message  (raw email text)
+# =====================================================
+
 import pandas as pd
-
-base_dir = os.path.expanduser("~/Desktop/maildir")  # path
-
-rows = []
-for root, dirs, files in os.walk(base_dir):
-    for name in files:
-        if name.startswith("."):  # skip hidden files
-            continue
-        path = os.path.join(root, name)
-        try:
-            with open(path, "r", errors="ignore") as f:
-                content = f.read()
-                rows.append({"path": path, "text": content})
-        except Exception as e:
-            print("Skipping:", path, "| Reason:", e)
-
-df = pd.DataFrame(rows)
-print("✅ Total emails loaded:", len(df))
-
-# Show one example to confirm it worked
-if not df.empty:
-    print("\nSample email path:", df.iloc[0]["path"])
-    print(df.iloc[0]["text"][:400])
-# ---------- Phase 1: Parse Email Headers ----------
+import numpy as np
 import re
+import networkx as nx
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
 
-def parse_email_fields(text):
-    fields = {}
-    for key in ["From", "To", "Subject", "Date"]:
-        match = re.search(rf"^{key}:(.*)$", text, re.MULTILINE)
-        fields[key.lower()] = match.group(1).strip() if match else None
-    body_split = re.split(r"\n\n", text, 1)
-    fields["body"] = body_split[1] if len(body_split) > 1 else ""
-    return fields
+# -------------------------------------
+# Phase 0 — Load CSV (YOUR FORMAT)
+# -------------------------------------
 
-parsed = df["text"].apply(parse_email_fields)
-emails = pd.DataFrame(parsed.tolist())
-emails.head()
-# ---------- Phase 1: Clean and Normalize ----------
+csv_path = "emails.csv"   # <-- MODIFY THIS PATH
 
-# Drop emails missing sender or recipient
-emails = emails.dropna(subset=["from", "to"])
+df = pd.read_csv(csv_path)
+print("✅ CSV loaded, rows:", len(df))
+print(df.head())
 
-# Convert all to lowercase for consistency
-emails["from"] = emails["from"].str.lower().str.strip()
-emails["to"] = emails["to"].str.lower().str.strip()
+# Expecting columns: file, message
+if not all(col in df.columns for col in ["file", "message"]):
+    raise ValueError("Error: CSV must contain 'file' and 'message' columns")
 
-print("Emails with valid sender and recipient:", len(emails))
-emails.head()
-# ---------- Phase 1: Expand multiple recipients ----------
+
+# -------------------------------------
+# Phase 1 — Parse Email Headers
+# -------------------------------------
+
+def parse_fields(raw_text):
+
+    # Extract basic headers using regex
+    def extract(pattern):
+        match = re.search(pattern, raw_text, re.MULTILINE | re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    from_field = extract(r"^From:\s*(.*)$")
+    to_field = extract(r"^To:\s*(.*)$")
+    subject_field = extract(r"^Subject:\s*(.*)$")
+    date_field = extract(r"^Date:\s*(.*)$")
+
+    # Extract body (after first blank line)
+    parts = re.split(r"\n\s*\n", raw_text, 1)
+    body = parts[1] if len(parts) > 1 else ""
+
+    return pd.Series({
+        "From": from_field,
+        "To": to_field,
+        "Subject": subject_field,
+        "Date": date_field,
+        "Message": body
+    })
+
+
+print(" Parsing all emails (this may take 10–20 seconds)...")
+
+parsed = df["message"].apply(parse_fields)
+emails = parsed.copy()
+
+# Drop empty senders/recipients
+emails = emails.dropna(subset=["From", "To"])
+emails["From"] = emails["From"].str.lower().str.strip()
+emails["To"] = emails["To"].str.lower().str.strip()
+emails["Message"] = emails["Message"].astype(str)
+
+print("Parsed emails:", len(emails))
+print(emails.head())
+
+
+# -------------------------------------
+# Phase 1 — Build Communication Graph
+# -------------------------------------
+
 records = []
 for _, row in emails.iterrows():
-    for recipient in str(row["to"]).split(","):
-        recipient = recipient.strip().lower()
-        if recipient:
-            records.append({"from": row["from"], "to": recipient})
+    tos = str(row["To"]).split(",")
+    for t in tos:
+        t = t.strip()
+        if t:
+            records.append({"from": row["From"], "to": t})
 
 edges_df = pd.DataFrame(records)
-print("Edges created (email pairs):", len(edges_df))
-edges_df.head()
-# ---------- Phase 1: Build communication network ----------
-import networkx as nx
+print("🔗 Edges:", len(edges_df))
 
-# Build directed graph
 G = nx.from_pandas_edgelist(edges_df, "from", "to", create_using=nx.DiGraph())
+print(" Graph nodes:", len(G.nodes()), "edges:", len(G.edges()))
 
-print(f"Network built. Nodes: {len(G.nodes())}, Edges: {len(G.edges())}")
-
-# Compute centrality (how important each person is)
 centrality = nx.betweenness_centrality(G)
 top_people = sorted(centrality.items(), key=lambda x: x[1], reverse=True)[:15]
 
-print("\nTop 15 most connected people:")
-for person, score in top_people:
-    print(f"{person:<40} {score:.5f}")
-# ---------- Phase 1: Complete ----------
-important_people = [p for p, _ in top_people]
-filtered_emails = emails[
-    emails["from"].isin(important_people) | emails["to"].isin(important_people)
-]
-filtered_emails.to_csv("phase1_filtered_emails.csv", index=False)
+print("\n Top 15 central people:")
+for p, c in top_people:
+    print(f"{p:<40} {c:.5f}")
 
-print("Phase 1 complete — filtered dataset saved as phase1_filtered_emails.csv")
+important_people = [p for p, _ in top_people]
+filtered = emails[emails["From"].isin(important_people) | emails["To"].isin(important_people)]
+
+filtered.to_csv("phase1_filtered_emails.csv", index=False)
+print("\n✅ Phase 1 complete — saved phase1_filtered_emails.csv with", len(filtered), "emails")
+
+
+# -------------------------------------
+# Phase 2 — Keyword Detection
+# -------------------------------------
+
+emails = filtered.copy()
+
+# Clean text
+emails["clean"] = (
+    emails["Message"]
+    .str.lower()
+    .str.replace(r"[^a-z\s]", " ", regex=True)
+    .str.replace(r"\s+", " ", regex=True)
+)
+
+insider_terms = [
+    "insider", "sell shares", "buy shares", "buy stock", "sell stock",
+    "market rumor", "material nonpublic", "non public",
+    "earnings release", "quiet period", "sec", "tip off",
+    "inside info", "insider info", "confidential"
+]
+
+def score(text):
+    return sum(term in text for term in insider_terms)
+
+emails["keyword_score"] = emails["clean"].apply(score)
+suspicious = emails[emails["keyword_score"] > 0]
+
+print("\n⚠ Emails with insider keywords:", len(suspicious))
+
+
+# -------------------------------------
+# Phase 3 — Time Filter (2001 Crisis)
+# -------------------------------------
+
+emails["Date"] = pd.to_datetime(emails["Date"], errors="ignore")
+suspicious["Date"] = pd.to_datetime(suspicious["Date"], errors="ignore")
+
+time_filtered = suspicious[
+    suspicious["Date"].between("2001-04-01", "2001-12-31", inclusive="both")
+]
+
+print("Emails in crisis window:", len(time_filtered))
+
+
+if len(time_filtered) >= 10:
+    vectorizer = TfidfVectorizer(max_df=0.9, min_df=3, stop_words="english")
+    X = vectorizer.fit_transform(time_filtered["clean"])
+
+    lda = LatentDirichletAllocation(n_components=4, random_state=42)
+    topics = lda.fit_transform(X)
+
+    vocab = np.array(vectorizer.get_feature_names_out())
+
+    print("\n LDA Topics:")
+    for i, comp in enumerate(lda.components_):
+        print(f"Topic {i}: {', '.join(vocab[np.argsort(comp)][-10:])}")
+
+    time_filtered["topic"] = topics.argmax(axis=1)
+else:
+    time_filtered["topic"] = 0
+    print("\n Skipping topic modeling — too few emails.")
+
+
+# -------------------------------------
+# Final — Top 5 Insider Trading Emails
+# -------------------------------------
+
+time_filtered["final_score"] = time_filtered["keyword_score"] * 2 + 1
+
+top5 = time_filtered.sort_values("final_score", ascending=False).head(5)
+top5.to_csv("top5_insider_trading.csv", index=False)
+
+print("\n TOP 5 insider trading emails saved → top5_insider_trading.csv\n")
+
+for _, row in top5.iterrows():
+    print("------------------------------------------------------")
+    print("From:", row["From"])
+    print("To:", row["To"])
+    print("Subject:", row["Subject"])
+    print("Date:", row["Date"])
+    print("Score:", row["final_score"])
+    print("Snippet:", row["Message"][:350].replace("\n", " "))
+    print()
