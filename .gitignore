@@ -1,0 +1,38 @@
+# Large data files
+emails.csv
+emails.csv*
+filtered_emails.csv
+phase1_filtered_emails.csv
+
+# All text files - ignore ALL .txt and .text files
+*.txt
+*.text
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+*.Zone.Identifier
+
+# Output files (images, CSVs, etc.)
+*.png
+*.jpg
+*.jpeg
+
+# Exception: Keep requirements.txt (but all other .txt files are ignored)
+!requirements.txt
