@@ -217,23 +217,6 @@ top100 = analysis_set_sorted.head(100) if len(analysis_set_sorted) >= 100 else a
 top100.to_csv("top100_suspicious_emails.csv", index=False)
 print(f"✅ Saved top 100 suspicious emails -> top100_suspicious_emails.csv")
 
-# --- Optional: Topic Modeling (LDA) on the top set ---
-if len(top100) >= 10:
-    print("\n🧠 Running Topic Modeling (LDA)...")
-    vectorizer = TfidfVectorizer(max_df=0.9, min_df=2, stop_words="english")
-    X = vectorizer.fit_transform(top100["clean"])
-    
-    lda = LatentDirichletAllocation(n_components=3, random_state=42)
-    topics = lda.fit_transform(X)
-    vocab = np.array(vectorizer.get_feature_names_out())
-    
-    for i, comp in enumerate(lda.components_):
-        print(f"  Topic {i}: {', '.join(vocab[np.argsort(comp)][-8:])}")
-    
-    top100["topic"] = topics.argmax(axis=1)
-else:
-    print("⚠️  Skipping topic modeling (too few emails)")
-
 # =====================================================
 # PHASE 4 — EVALUATION & ITERATION
 # =====================================================
@@ -349,34 +332,3 @@ if not final_emails.empty:
     plt.savefig("timeline_chart.png", dpi=300)
     plt.close()
     print("✅ Saved timeline_chart.png")
-
-# 3. Final Report
-print("📄 Generating Final Report...")
-report_content = [
-    "ENRON INSIDER TRADING DETECTION - FINAL REPORT",
-    "="*50,
-    f"Generated: {pd.Timestamp.now()}",
-    "",
-    "KEY METRICS",
-    f"• Total Emails Processed: {len(df)}",
-    f"• After Network Filter: {len(filtered)}",
-    f"• After Keyword Filter: {len(suspicious)}",
-    f"• After Time & Off-Hours Filter: {len(analysis_set)}",
-    f"• Final Suspicious Emails (Refined): {len(top100_refined)}",
-    "",
-    "TOP SUSPICIOUS EMAILS",
-    "-"*50
-]
-
-for i, (_, row) in enumerate(top100_refined.head(5).iterrows(), 1):
-    report_content.append(f"\n#{i} | Score: {row['refined_score']:.2f} | Date: {row['Date']}")
-    report_content.append(f"From: {row['From']} -> To: {row['To']}")
-    report_content.append(f"Subject: {row['Subject']}")
-    report_content.append(f"Snippet: {row['Message'][:200]}...")
-
-with open("final_report.txt", "w") as f:
-    f.write("\n".join(report_content))
-
-print("✅ Saved final_report.txt")
-print("\n✨ PIPELINE COMPLETE!")
-
