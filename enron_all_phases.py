@@ -34,6 +34,11 @@ print("="*70)
 print("PHASE 0 — LOAD DATA")
 print("="*70)
 
+# Create output directory if it doesn't exist
+output_dir = "output"
+os.makedirs(output_dir, exist_ok=True)
+print(f"✅ Output directory: {output_dir}/")
+
 csv_path = "emails.csv"
 if not os.path.exists(csv_path):
     raise FileNotFoundError(f"Error: {csv_path} not found. Please ensure the dataset is present.")
@@ -119,7 +124,7 @@ for p, c in top_people:
 important_people = [p for p, _ in top_people]
 filtered = emails[emails["From"].isin(important_people) | emails["To"].isin(important_people)].copy()
 
-filtered.to_csv("phase1_filtered_emails.csv", index=False)
+filtered.to_csv(os.path.join(output_dir, "phase1_filtered_emails.csv"), index=False)
 print(f"✅ Saved phase1_filtered_emails.csv ({len(filtered)} emails)")
 
 # =====================================================
@@ -138,10 +143,60 @@ filtered["clean"] = (
 )
 
 insider_terms = [
-    "insider", "sell shares", "buy shares", "buy stock", "sell stock",
-    "market rumor", "material nonpublic", "non public",
-    "earnings release", "quiet period", "sec", "tip off",
-    "inside info", "insider info", "confidential"
+    "naked calls",
+    "naked options",
+    "uncovered calls",
+    "short calls",
+    "sell calls",
+    "buy calls",
+    "sell puts",
+    "buy puts",
+    "hedge my options",
+    "hedge my position",
+    "unexercised vested options",
+    "exercise my options",
+    "exercising options",
+
+    # Enron / ENE equity specifically
+    "enron stock",
+    "enron shares",
+    "enron options",
+    "ene stock",
+    "ene shares",
+    "ene options",
+    "ene equity",
+
+    # Questionable trading behaviour / timing
+    "front run",
+    "front-running",
+    "front running",
+    "ahead of the announcement",
+    "before earnings",
+    "before the earnings release",
+    "before it's announced",
+    "before its announced",
+    "before it is announced",
+
+    # Explicit MNPI / insider language
+    "insider trading",
+    "inside information",
+    "insider information",
+    "inside info",
+    "material nonpublic information",
+    "material non-public information",
+    "mnpi",
+    "nonpublic information",
+    "non-public information",
+    "selective disclosure",
+    "stock tip",
+    "tippee",
+    "tipper",
+
+    # Contextual but noisier terms (remove if too many false positives)
+    "market rumor",
+    "quiet period",
+    "blackout period",
+    "trading blackout"
 ]
 
 def score(text):
@@ -214,8 +269,8 @@ analysis_set["risk_score"] = analysis_set["keyword_score"] + (-5 * analysis_set[
 analysis_set_sorted = analysis_set.sort_values("risk_score", ascending=False)
 top100 = analysis_set_sorted.head(100) if len(analysis_set_sorted) >= 100 else analysis_set_sorted.copy()
 
-top100.to_csv("top100_suspicious_emails.csv", index=False)
-print(f"✅ Saved top 100 suspicious emails -> top100_suspicious_emails.csv")
+top100.to_csv(os.path.join(output_dir, "top100_suspicious_emails.csv"), index=False)
+print(f"✅ Saved top 100 suspicious emails -> {output_dir}/top100_suspicious_emails.csv")
 
 # =====================================================
 # PHASE 4 — EVALUATION & ITERATION
@@ -228,28 +283,71 @@ print("="*70)
 stop_list = [
     "quarterly report", "annual report", "meeting agenda", 
     "conference call", "public announcement", "press release",
-    "regulatory filing", "compliance", "audit committee"
+    "regulatory filing", "compliance", "audit committee", "SEC"
 ]
 
 def refine_keyword_score(text, stop_list, base_score):
     """Refined scoring that penalizes stop-list terms"""
     # Penalize if stop-list terms are present (likely false positives)
     penalty = sum(1 for stop_term in stop_list if stop_term in text)
-    # Reduce the existing risk score
-    return max(0, base_score - (penalty * 2.0)) # Penalize heavily
+    # Reduce the existing risk score (reduced penalty from 2.0 to 1.0 to be less aggressive)
+    return max(0, base_score - (penalty * 1.0)) # Penalize moderately
 
 print("🔍 Applying stop-list refinement...")
 top100["refined_score"] = top100.apply(
     lambda row: refine_keyword_score(row["clean"], stop_list, row["risk_score"]), axis=1
 )
 
-# Re-rank
-top100_refined = top100[top100["refined_score"] > 0].sort_values("refined_score", ascending=False)
+# Re-rank (with reduced penalty, emails with refined_score > 0 should pass)
+top100_refined = top100.sort_values("refined_score", ascending=False).head(100)
 
 # Save refined
 output_filename = "top100_refined_suspicious_emails.csv"
-top100_refined.to_csv(output_filename, index=False)
-print(f"✅ Saved refined list -> {output_filename} ({len(top100_refined)} emails)")
+top100_refined.to_csv(os.path.join(output_dir, output_filename), index=False)
+print(f"✅ Saved refined list -> {output_dir}/{output_filename} ({len(top100_refined)} emails)")
+
+# Select Top 5 Refined Suspicious Emails
+print("\n" + "="*70)
+print("TOP 5 REFINED SUSPICIOUS EMAILS")
+print("="*70)
+
+if len(top100_refined) > 0:
+    top5_refined = top100_refined.sort_values("refined_score", ascending=False).head(5)
+    top5_refined.to_csv(os.path.join(output_dir, "top5_refined_suspicious_emails.csv"), index=False)
+    print(f"\n✅ Top 5 refined suspicious emails saved -> {output_dir}/top5_refined_suspicious_emails.csv\n")
+    
+    for idx, (_, row) in enumerate(top5_refined.iterrows(), 1):
+        print("-" * 70)
+        print(f"#{idx} | Refined Score: {row['refined_score']:.2f} | Risk Score: {row['risk_score']:.2f}")
+        print("-" * 70)
+        print(f"From:    {row['From']}")
+        print(f"To:      {row['To']}")
+        print(f"Subject: {row['Subject']}")
+        print(f"Date:    {row['Date']}")
+        print(f"Keyword Score: {row['keyword_score']} | Sentiment: {row['sentiment']:.3f}")
+        print(f"\nMessage Snippet:")
+        message_snippet = str(row['Message'])[:350].replace("\n", " ")
+        print(f"{message_snippet}...")
+        print()
+else:
+    print("⚠️  No refined emails available. Using top 5 from unrefined list.")
+    top5_unrefined = top100.sort_values("risk_score", ascending=False).head(5)
+    top5_unrefined.to_csv(os.path.join(output_dir, "top5_suspicious_emails.csv"), index=False)
+    print(f"✅ Top 5 suspicious emails saved -> {output_dir}/top5_suspicious_emails.csv\n")
+    
+    for idx, (_, row) in enumerate(top5_unrefined.iterrows(), 1):
+        print("-" * 70)
+        print(f"#{idx} | Risk Score: {row['risk_score']:.2f}")
+        print("-" * 70)
+        print(f"From:    {row['From']}")
+        print(f"To:      {row['To']}")
+        print(f"Subject: {row['Subject']}")
+        print(f"Date:    {row['Date']}")
+        print(f"Keyword Score: {row['keyword_score']} | Sentiment: {row['sentiment']:.3f}")
+        print(f"\nMessage Snippet:")
+        message_snippet = str(row['Message'])[:350].replace("\n", " ")
+        print(f"{message_snippet}...")
+        print()
 
 # =====================================================
 # PHASE 5 — VISUALIZATION & REPORTING
@@ -292,9 +390,9 @@ if viz_edges:
     plt.title(f"Network of Top Suspicious Emails ({len(final_emails)} emails)")
     plt.axis("off")
     plt.tight_layout()
-    plt.savefig("network_graph.png", dpi=300)
+    plt.savefig(os.path.join(output_dir, "network_graph.png"), dpi=300)
     plt.close()
-    print("✅ Saved network_graph.png")
+    print(f"✅ Saved {output_dir}/network_graph.png")
 else:
     print("⚠️  No edges to visualize.")
 
@@ -329,6 +427,6 @@ if not final_emails.empty:
             ax2.axvline(x=date.date(), color="red", linestyle="--", alpha=0.6)
             
     plt.tight_layout()
-    plt.savefig("timeline_chart.png", dpi=300)
+    plt.savefig(os.path.join(output_dir, "timeline_chart.png"), dpi=300)
     plt.close()
-    print("✅ Saved timeline_chart.png")
+    print(f"✅ Saved {output_dir}/timeline_chart.png")
